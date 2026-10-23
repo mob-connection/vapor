@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "Vapor", targets: ["Vapor"]),
         .library(name: "VaporTesting", targets: ["VaporTesting"]),
         .library(name: "VaporMacros", targets: ["VaporMacros"]),
+        .library(name: "VaporOpenAPI", targets: ["VaporOpenAPI"]),
     ],
     traits: [
         .trait(name: "WebSockets"),
@@ -21,11 +22,14 @@ let package = Package(
         .trait(name: "Multipart"),
         .trait(name: "MacroRouting"),
         .trait(name: "UnstableHTTP3"),
+        .trait(name: "OpenAPI"),
         .default(enabledTraits: [
             "WebSockets",
             "HTTPClient",
             "Multipart",
             "MacroRouting",
+            // TODO: Remove
+            "OpenAPI",
         ]),
     ],
     dependencies: [
@@ -110,6 +114,9 @@ let package = Package(
         // HTTP/3 and QUIC support for SwiftNIO - used for testing
         .package(url: "https://github.com/apple/swift-nio-http3.git", .upToNextMinor(from: "0.3.0")),
         .package(url: "https://github.com/apple/swift-nio-quic.git", .upToNextMinor(from: "0.4.0")),
+
+        // OpenAPI document types, used by the OpenAPI trait
+        .package(url: "https://github.com/mattpolzin/OpenAPIKit", from: "7.0.0", traits: []),
     ],
     targets: [
         // Vapor
@@ -168,6 +175,15 @@ let package = Package(
                 .target(name: "VaporMacrosPlugin", condition: .when(traits: ["MacroRouting"])),
                 "Vapor",
                 .product(name: "HTTPTypes", package: "swift-http-types"),
+            ],
+            swiftSettings: swiftSettings
+        ),
+
+        .target(
+            name: "VaporOpenAPI",
+            dependencies: [
+                .product(name: "OpenAPIKit", package: "OpenAPIKit", condition: .when(traits: ["OpenAPI"])),
+                "Vapor",
             ],
             swiftSettings: swiftSettings
         ),
@@ -253,6 +269,14 @@ let package = Package(
             ],
             swiftSettings: swiftSettings
         ),
+        .testTarget(
+            name: "VaporOpenAPITests",
+            dependencies: [
+                "VaporOpenAPI",
+                .product(name: "OpenAPIKit", package: "OpenAPIKit", condition: .when(traits: ["OpenAPI"])),
+            ],
+            swiftSettings: swiftSettings
+        )
     ]
 )
 
