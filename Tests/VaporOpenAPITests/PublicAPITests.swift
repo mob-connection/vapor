@@ -1,0 +1,63 @@
+#if OpenAPI
+import Testing
+import VaporOpenAPI
+
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
+
+// No `@testable` here: this file only sees the public API, so it fails to compile if anything a
+// user needs is accidentally internal.
+
+private enum CustomerID: OpenAPILinkKey {}
+private enum InvoiceID: OpenAPILinkKey {
+    static var description: String? { "The invoice to fetch" }
+}
+
+@Suite("Public API")
+struct PublicAPITests {
+    @Test("A link key can be declared outside the module without a description")
+    func linkKeyWithoutDescription() {
+        #expect(CustomerID.description == nil)
+    }
+
+    @Test("A link key can provide its own description outside the module")
+    func linkKeyWithDescription() {
+        #expect(InvoiceID.description == "The invoice to fetch")
+    }
+
+    @Test("Links can be built and changed outside the module")
+    func links() {
+        var link = OpenAPILink("id", in: .response(.body))
+        #expect(link.name == "id")
+        #expect(link.location.description == "response.body")
+
+        link.name = "session"
+        link.location = .request(.cookie)
+        #expect(link == OpenAPILink("session", in: .request(.cookie)))
+    }
+
+    @Test("Auth schemes and OAuth2 flows can be built outside the module")
+    func auth() throws {
+        let authURL = try #require(URL(string: "https://example.com/authorize"))
+        let tokenURL = try #require(URL(string: "https://example.com/token"))
+        let auths: [OpenAPIAuth] = [
+            .basic(id: "basic", description: "Basic"),
+            .bearer(format: "JWT"),
+            .apiKey(name: "X-API-Key", in: .query),
+            .openIDConnect(url: authURL),
+            .oauth2(flows: .implicit(authorizationUrl: authURL, refreshUrl: tokenURL, scopes: ["read": "Read"])),
+            .oauth2(flows: .password(tokenUrl: tokenURL)),
+            .oauth2(flows: .clientCredentials(tokenUrl: tokenURL, scopes: ["read": "Read"])),
+            .oauth2(flows: .authorizationCode(authorizationUrl: authURL, tokenUrl: tokenURL), metadataUrl: authURL),
+            .oauth2(flows: .deviceAuthorization(deviceAuthorizationUrl: authURL, tokenUrl: tokenURL)),
+            .mutualTLS(),
+        ]
+        #expect(auths.map { $0.scopes("read").scopes } == Array(repeating: ["read"], count: auths.count))
+        #expect(auths.map { $0.scopes(["a", "b"]).scopes } == Array(repeating: ["a", "b"], count: auths.count))
+        #expect(auths.allSatisfy { !$0.id.isEmpty })
+    }
+}
+#endif

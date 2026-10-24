@@ -103,15 +103,22 @@ extension OpenAPIAuth {
         var oauthFlow: OpenAPI.OAuthFlows {
             switch base {
             case .implicit(let authorizationUrl, let refreshUrl, let scopes):
-                OpenAPI.OAuthFlows(implicit: .init(authorizationUrl: authorizationUrl, refreshUrl: refreshUrl, scopes: scopes.sortedOrderedDictionary))
+                OpenAPI.OAuthFlows(
+                    implicit: .init(authorizationUrl: authorizationUrl, refreshUrl: refreshUrl, scopes: scopes.sortedOrderedDictionary))
             case .password(let tokenUrl, let refreshUrl, let scopes):
                 OpenAPI.OAuthFlows(password: .init(tokenUrl: tokenUrl, refreshUrl: refreshUrl, scopes: scopes.sortedOrderedDictionary))
             case .clientCredentials(let tokenUrl, let refreshUrl, let scopes):
-                OpenAPI.OAuthFlows(clientCredentials: .init(tokenUrl: tokenUrl, refreshUrl: refreshUrl, scopes: scopes.sortedOrderedDictionary))
+                OpenAPI.OAuthFlows(
+                    clientCredentials: .init(tokenUrl: tokenUrl, refreshUrl: refreshUrl, scopes: scopes.sortedOrderedDictionary))
             case .authorizationCode(let authorizationUrl, let tokenUrl, let refreshUrl, let scopes):
-                OpenAPI.OAuthFlows(authorizationCode: .init(authorizationUrl: authorizationUrl, tokenUrl: tokenUrl, refreshUrl: refreshUrl, scopes: scopes.sortedOrderedDictionary))
+                OpenAPI.OAuthFlows(
+                    authorizationCode: .init(
+                        authorizationUrl: authorizationUrl, tokenUrl: tokenUrl, refreshUrl: refreshUrl,
+                        scopes: scopes.sortedOrderedDictionary))
             case .deviceAuthorization(let deviceAuthorizationUrl, let tokenUrl, let scopes):
-                OpenAPI.OAuthFlows(deviceAuthorization: .init(deviceAuthorizationUrl: deviceAuthorizationUrl, tokenUrl: tokenUrl, scopes: scopes.sortedOrderedDictionary))
+                OpenAPI.OAuthFlows(
+                    deviceAuthorization: .init(
+                        deviceAuthorizationUrl: deviceAuthorizationUrl, tokenUrl: tokenUrl, scopes: scopes.sortedOrderedDictionary))
             }
         }
 
@@ -133,7 +140,9 @@ extension OpenAPIAuth {
         }
 
         /// The authorization code flow, getting a code from `authorizationUrl` and exchanging it at `tokenUrl`.
-        public static func authorizationCode(authorizationUrl: URL, tokenUrl: URL, refreshUrl: URL? = nil, scopes: [String: String] = [:]) -> Self {
+        public static func authorizationCode(authorizationUrl: URL, tokenUrl: URL, refreshUrl: URL? = nil, scopes: [String: String] = [:])
+            -> Self
+        {
             .init(base: .authorizationCode(authorizationUrl: authorizationUrl, tokenUrl: tokenUrl, refreshUrl: refreshUrl, scopes: scopes))
         }
 
@@ -167,34 +176,30 @@ extension OpenAPI.SecurityScheme {
     /// An id derived from what the scheme is, not how it's described, so that different schemes
     /// never share a key in `components.securitySchemes`.
     var autoName: String {
-        let parts: [String?] = switch type {
-        case .apiKey(let name, let location):
-            [type.name.rawValue, location.rawValue, name]
-        case .http(let scheme, let bearerFormat):
-            [type.name.rawValue, scheme, bearerFormat]
-        case .oauth2(let flows, _):
-            [
-                type.name.rawValue,
-                flows.implicit.map { _ in "implicit" },
-                flows.password.map { _ in "password" },
-                flows.clientCredentials.map { _ in "clientCredentials" },
-                flows.authorizationCode.map { _ in "authorizationCode" },
-                flows.deviceAuthorization.map { _ in "deviceAuthorization" },
-            ]
-        case .openIdConnect, .mutualTLS:
-            [type.name.rawValue]
-        }
-        return parts
+        let parts: [String?] =
+            switch type {
+            case .apiKey(let name, let location):
+                [type.name.rawValue, location.rawValue, name]
+            case .http(let scheme, let bearerFormat):
+                [type.name.rawValue, scheme, bearerFormat]
+            case .oauth2(let flows, _):
+                [
+                    type.name.rawValue,
+                    flows.implicit.map { _ in "implicit" },
+                    flows.password.map { _ in "password" },
+                    flows.clientCredentials.map { _ in "clientCredentials" },
+                    flows.authorizationCode.map { _ in "authorizationCode" },
+                    flows.deviceAuthorization.map { _ in "deviceAuthorization" },
+                ]
+            case .openIdConnect, .mutualTLS:
+                [type.name.rawValue]
+            }
+        return
+            parts
             .compactMap { $0 }
             .filter { !$0.isEmpty }
-            .map(Self.componentKeySafe)
+            .map(\.componentKeySafe)
             .joined(separator: "_")
-    }
-
-    /// Component keys must match `^[a-zA-Z0-9\.\-_]+$`, so anything else in user-provided
-    /// parts (header names, bearer formats) is replaced with `-`
-    private static func componentKeySafe(_ part: String) -> String {
-        String(part.map { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) ? $0 : "-" })
     }
 }
 
