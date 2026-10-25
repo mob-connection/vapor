@@ -59,5 +59,38 @@ struct PublicAPITests {
         #expect(auths.map { $0.scopes(["a", "b"]).scopes } == Array(repeating: ["a", "b"], count: auths.count))
         #expect(auths.allSatisfy { !$0.id.isEmpty })
     }
+
+    // These only need to compile: the structure they build is checked in `OpenAPIValueTests`.
+
+    @Test("Bodies can be built outside the module, from variadics or arrays")
+    func bodies() {
+        let variants: [OpenAPIBody] = [.type(PublicUser.self), .example(PublicUser(id: 1))]
+        _ = OpenAPIBody.type(PublicModel.self)
+        _ = OpenAPIBody.all(of: .type(PublicUser.self), .example(PublicUser(id: 2)))
+        _ = OpenAPIBody.any(of: .type(PublicUser.self))
+        _ = OpenAPIBody.one(of: .type(PublicUser.self), .not(.type(PublicUser.self)))
+        _ = OpenAPIBody.all(of: variants)
+        _ = OpenAPIBody.any(of: variants)
+        _ = OpenAPIBody.one(of: variants)
+    }
+
+    @Test("Parameters can be built outside the module, from variadics, arrays or literals")
+    func parameters() {
+        let common: [OpenAPIParameters] = [.type(PublicUser.self)]
+        let literal: OpenAPIParameters = [.type(PublicUser.self), .example(PublicUser(id: 3))]
+        _ = OpenAPIParameters.type(PublicModel.self)
+        _ = OpenAPIParameters.example(PublicUser(id: 1))
+        _ = OpenAPIParameters.all(of: .type(PublicUser.self), literal)
+        _ = OpenAPIParameters.all(of: common + [literal])
+    }
+}
+
+private struct PublicUser: Codable, Sendable {
+    var id: Int
+}
+
+/// Not `Sendable`: describing it by type only needs its metatype.
+private final class PublicModel: Decodable {
+    var id = 0
 }
 #endif
