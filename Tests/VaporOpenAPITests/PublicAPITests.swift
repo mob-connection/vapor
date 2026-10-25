@@ -85,6 +85,22 @@ struct PublicAPITests {
     }
 }
 
+extension PublicAPITests {
+    @Test("Schemas can be built and refined outside the module")
+    func schemas() {
+        _ = OpenAPISchema.object([
+            "id": .string(format: .uuid),
+            "phone": .string(format: .other("phone")).optional(),
+            "count": .integer(format: .int64),
+            "ratio": .number(format: .double).optional(),
+            "active": .boolean,
+            "tags": .array(of: .string()),
+            "scores": .dictionary(of: .integer(format: .other("uint8"))),
+            "role": .enumeration(["admin", "user"]).description("The user's role"),
+        ])
+    }
+}
+
 private struct PublicUser: Codable, Sendable {
     var id: Int
 }
