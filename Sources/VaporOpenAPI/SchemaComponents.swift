@@ -1,0 +1,60 @@
+#if OpenAPI
+import OpenAPIKit
+
+/// Collects `components.schemas` and hands out `$ref`s to them.
+///
+/// Names are keyed by type, so same-named types get `User`, `User2`…
+struct SchemaComponents: Sendable, Equatable {
+    private(set) var schemas: OrderedDictionary<OpenAPI.ComponentKey, JSONSchema> = [:]
+    /// Names of stored types and of types being described.
+    private var names: [ObjectIdentifier: OpenAPI.ComponentKey] = [:]
+    /// Types with a `$ref` handed out, whose component must exist.
+    private var referenced: Set<ObjectIdentifier> = []
+
+    /// A `$ref` to `type`'s component, or its schema inline.
+    ///
+    /// `describe` builds the schema and may recurse for nested types. The name is reserved first,
+    /// so a recursive type refers to itself. Non-``JSONSchema/isReferenceable`` schemas stay
+    /// inline unless already referred to. If `describe` throws, nothing it added is kept.
+    mutating func schema(
+        for type: Any.Type,
+        describe: (inout SchemaComponents) throws -> JSONSchema
+    ) rethrows -> JSONSchema {
+        let id = ObjectIdentifier(type)
+        if let key = names[id] {
+            referenced.insert(id)
+            return .reference(.component(named: key.rawValue))
+        }
+
+        let componentName = JSONSchema.componentName(for: type)
+        var candidate = componentName
+        var suffix = 2
+        while names.values.contains(where: { $0.rawValue == candidate }) {
+            candidate = componentName + "\(suffix)"
+            suffix += 1
+        }
+        guard let key = OpenAPI.ComponentKey(rawValue: candidate) else {
+            preconditionFailure("componentName(for:) made an invalid component key: \(candidate)")
+        }
+
+        let saved = self
+        names[id] = key
+        let schema: JSONSchema
+        do {
+            schema = try describe(&self)
+        } catch {
+            // Drop components added meanwhile too: they may refer to this type.
+            self = saved
+            throw error
+        }
+
+        guard schema.isReferenceable || referenced.contains(id) else {
+            names[id] = nil
+            return schema
+        }
+        schemas[key] = schema
+        return .reference(.component(named: key.rawValue))
+    }
+}
+
+#endif

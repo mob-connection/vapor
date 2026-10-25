@@ -80,11 +80,7 @@ public struct OpenAPISchema: Sendable, Equatable {
     /// For an ``enumeration(_:)``, `null` is added to the allowed values too, since a value has
     /// to match both the type and the enum.
     public func nullable() -> Self {
-        let nullable = schema.nullableSchemaObject()
-        guard let allowedValues = schema.allowedValues, !allowedValues.contains(nil) else {
-            return Self(schema: nullable)
-        }
-        return Self(schema: nullable.with(allowedValues: allowedValues + [nil]))
+        Self(schema: schema.allowingNull())
     }
 
     /// The same schema, with a description shown in the generated document.
