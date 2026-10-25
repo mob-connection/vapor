@@ -99,6 +99,21 @@ extension PublicAPITests {
             "role": .enumeration(["admin", "user"]).description("The user's role"),
         ])
     }
+
+    @Test("Types outside the module can describe their own schema, or take the enum default")
+    func schemaProviders() {
+        #expect(PublicRole.openAPISchema == .enumeration(["admin", "user"]))
+        #expect(PublicMoney.openAPISchema == .string(format: .other("money")))
+    }
+}
+
+private enum PublicRole: String, CaseIterable, OpenAPISchemaProvider {
+    case admin
+    case user
+}
+
+private struct PublicMoney: OpenAPISchemaProvider {
+    static var openAPISchema: OpenAPISchema { .string(format: .other("money")) }
 }
 
 private struct PublicUser: Codable, Sendable {
