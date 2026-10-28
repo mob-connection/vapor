@@ -1,8 +1,16 @@
 #if OpenAPI
 
+/// A decoder that records what a type's `init(from:)` asks for, instead of reading any data.
+///
+/// Every request is answered with a placeholder, so decoding runs to the end and leaves a
+/// ``DecodedShape`` behind. A class, so the containers it hands out can write into it.
 final class SchemaDecoder {
+    /// The types being decoded from the root down to this one, to spot recursion.
     let path: [Any.Type]
     let codingPath: [any CodingKey]
+    /// Shared by every decoder in one run.
+    let cache: Cache
+    /// What the containers have recorded so far.
     var kind: DecodedShape.Kind = .empty
     var isNullable = false
 
@@ -10,42 +18,68 @@ final class SchemaDecoder {
         [:]
     }
 
+    /// The one key a dictionary is offered, so its value type gets decoded once.
+    ///
+    /// String and `Int` keys accept it; synthesized `CodingKeys` don't, since a property name
+    /// can't start with a digit.
+    // TODO: Dictionaries with other keys, such as `[Role: Int]`, decode differently and fail.
     static let dictionaryKey = "0"
 
-    init(
-        path: [Any.Type],
-        codingPath: [any CodingKey]
-    ) {
+    init(path: [Any.Type], codingPath: [any CodingKey], cache: Cache) {
         self.path = path
         self.codingPath = codingPath
+        self.cache = cache
     }
 
+    /// The shape of `type`, or an error naming the path that couldn't be decoded.
     static func shape<T: Decodable>(of type: T.Type) throws -> DecodedShape {
-        try SchemaDecoder(path: [], codingPath: []).decodeNested(type).shape
+        let cache = Cache()
+        while true {
+            let cachedCount = cache.values.count
+            cache.endedRecursion = false
+            let shape = try SchemaDecoder(path: [], codingPath: [], cache: cache).decodeNested(type).shape
+            // A type between a recursion and the array that ended it stopped at the recursive property.
+            // Each run caches more values to answer such properties with, so run again until none is left,
+            // or until a run caches nothing new and the next would come out the same.
+            guard cache.endedRecursion, cache.values.count > cachedCount else { return shape }
+        }
     }
 
+    /// Values decoded in a run, to stand in for a type when it turns up inside itself.
+    final class Cache {
+        var values: [ObjectIdentifier: Any] = [:]
+        /// Whether an array or optional ended a recursion, leaving types around it partly decoded.
+        var endedRecursion = false
+    }
+
+    /// Decodes `type` with a child decoder, returning a value for the caller and its shape.
     func decodeNested<T: Decodable>(_ type: T.Type) throws -> (value: T, shape: DecodedShape) {
         if let placeholder = Placeholder.value(for: type) {
             return (placeholder, DecodedShape(type: type, kind: .leaf))
         }
 
-        guard
-            T.self is any RangeReplaceableCollection.Type
-                || T.self is any ExpressibleByNilLiteral.Type
-                || T.self is any EmptyInitializable.Type
-                || !path.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) })
-        else {
-            throw RecursionFound(shape: DecodedShape(type: type, kind: .recursive))
+        // Wrappers never recurse themselves; what they hold does.
+        if !Self.canBeEmpty(type), path.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
+            let recursive = DecodedShape(type: type, kind: .recursive)
+            if let cached = cache.values[ObjectIdentifier(type)] as? T {
+                return (cached, recursive)
+            }
+            throw RecursionFound(recursiveType: type, shape: recursive)
         }
 
-        let child = SchemaDecoder(path: path + [type], codingPath: codingPath)
+        let child = SchemaDecoder(path: path + [type], codingPath: codingPath, cache: cache)
 
         do {
             let value = try T(from: child)
+            if !Self.canBeEmpty(type) {
+                cache.values[ObjectIdentifier(type)] = value
+            }
             let decodedShape = DecodedShape(type: type, kind: child.kind, isNullable: child.isNullable)
             return (value, decodedShape)
-        } catch is RecursionFound {
+        } catch let recursion as RecursionFound {
+            // The nearest array or optional around the recursion ends it with an empty value.
             let decodedShape = DecodedShape(type: type, kind: child.kind, isNullable: child.isNullable)
+            cache.endedRecursion = true
             if let empty = (T.self as? any RangeReplaceableCollection.Type)?.init() as? T {
                 return (empty, decodedShape)
             }
@@ -55,14 +89,20 @@ final class SchemaDecoder {
             if let none = (T.self as? any ExpressibleByNilLiteral.Type)?.init(nilLiteral: ()) as? T {
                 return (none, decodedShape)
             }
+            // A plain type in between passes it up, so `Parent → [Child] → Parent` ends at the array.
+            guard ObjectIdentifier(recursion.recursiveType) == ObjectIdentifier(type) else {
+                throw RecursionFound(recursiveType: recursion.recursiveType, shape: decodedShape)
+            }
             throw SchemaDecodingError(
                 type: type,
                 codingPath: codingPath,
                 reason: "it contains itself with no array or optional to end the recursion"
             )
         } catch let error as SchemaDecodingError {
+            // Already describes the type that failed; don't wrap it again on the way up.
             throw error
         } catch {
+            // The type rejected a placeholder. An enum can still be decoded as its first case.
             let decodedShape = DecodedShape(type: type, kind: child.kind, isNullable: child.isNullable)
             if let first = (T.self as? any CaseIterable.Type)?.allCases.first as? T {
                 return (first, decodedShape)
@@ -84,6 +124,14 @@ final class SchemaDecoder {
         }
     }
 
+    /// Whether `type` can stand in empty or `nil`: arrays, sets, dictionaries and optionals.
+    static func canBeEmpty(_ type: Any.Type) -> Bool {
+        type is any RangeReplaceableCollection.Type
+            || type is any EmptyInitializable.Type
+            || type is any ExpressibleByNilLiteral.Type
+    }
+
+    /// Adds a property to the object being recorded.
     func append(_ field: DecodedShape.Field) {
         guard case .keyed(var fields) = kind else { return }
         fields.append(field)
@@ -111,6 +159,7 @@ extension SchemaDecoder: Decoder {
 }
 
 extension SchemaDecoder {
+    /// Records each decoded key as a property, or a dictionary's value for ``SchemaDecoder/dictionaryKey``.
     struct KeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
         let decoder: SchemaDecoder
         var codingPath: [any CodingKey] { decoder.codingPath }
@@ -126,6 +175,7 @@ extension SchemaDecoder {
         }
 
         func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
+            // An optional property ends recursion with `nil`; the property is already recorded.
             do {
                 return try decodeField(type, forKey: key, isOptional: true)
             } catch is RecursionFound {
@@ -133,6 +183,8 @@ extension SchemaDecoder {
             }
         }
 
+        // The protocol's defaults for these would win over the generic methods above: its
+        // `decodeIfPresent` overloads call `decode`, losing optionality, and its 128-bit `decode`s throw.
         func decode(_ type: Int128.Type, forKey key: Key) throws -> Int128 {
             try decodeField(type, forKey: key, isOptional: false)
         }
@@ -205,6 +257,7 @@ extension SchemaDecoder {
             try decodeField(type, forKey: key, isOptional: true)
         }
 
+        // Every key is present and not null, so custom `init(from:)`s decode all their properties.
         func contains(_ key: Key) -> Bool {
             true
         }
@@ -240,7 +293,7 @@ extension SchemaDecoder {
         }
 
         private func decodeField<T: Decodable>(_ type: T.Type, forKey key: Key, isOptional: Bool) throws -> T {
-            let fieldDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath + [key])
+            let fieldDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath + [key], cache: decoder.cache)
             do {
                 let (value, shape) = try fieldDecoder.decodeNested(type)
                 let field = DecodedShape.Field(name: key.stringValue, shape: shape, isOptional: isOptional)
@@ -263,6 +316,7 @@ extension SchemaDecoder {
 }
 
 extension SchemaDecoder {
+    /// Records the element of an array, decoding exactly one before reporting the end.
     struct UnkeyedContainer: UnkeyedDecodingContainer {
         let decoder: SchemaDecoder
         var currentIndex: Int = 0
@@ -286,6 +340,7 @@ extension SchemaDecoder {
             try decodeElement(type)
         }
 
+        // The protocol's default 128-bit `decode`s throw, and would win over the generic one.
         mutating func decode(_ type: Int128.Type) throws -> Int128 {
             try decodeElement(type)
         }
@@ -313,7 +368,7 @@ extension SchemaDecoder {
         }
 
         private mutating func decodeElement<T: Decodable>(_ type: T.Type) throws -> T {
-            let elementDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath)
+            let elementDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath, cache: decoder.cache)
             do {
                 let (value, shape) = try elementDecoder.decodeNested(type)
                 decoder.kind = .unkeyed(shape)
@@ -328,6 +383,7 @@ extension SchemaDecoder {
 }
 
 extension SchemaDecoder {
+    /// Records the value a wrapper holds, and whether it checked for `null`.
     struct SingleContainer: SingleValueDecodingContainer {
         let decoder: SchemaDecoder
 
@@ -344,6 +400,7 @@ extension SchemaDecoder {
             try decodeValue(type)
         }
 
+        // The protocol's default 128-bit `decode`s throw, and would win over the generic one.
         func decode(_ type: Int128.Type) throws -> Int128 {
             try decodeValue(type)
         }
@@ -354,7 +411,7 @@ extension SchemaDecoder {
 
         private func decodeValue<T: Decodable>(_ type: T.Type) throws -> T {
             do {
-                let valueDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath)
+                let valueDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath, cache: decoder.cache)
                 let (value, shape) = try valueDecoder.decodeNested(type)
                 decoder.kind = .single(shape)
                 return value
@@ -367,10 +424,15 @@ extension SchemaDecoder {
 }
 
 extension SchemaDecoder {
+    /// Raised where a type turns up inside itself, and caught by the nearest array or optional.
     private struct RecursionFound: Error {
+        /// The type that recurses.
+        let recursiveType: Any.Type
+        /// The shape the catching container records: the recursion, or a type it passed through.
         let shape: DecodedShape
     }
 
+    /// A type that can't be decoded from placeholders, with the path that led to it.
     private struct SchemaDecodingError: Error, CustomStringConvertible {
         let type: Any.Type
         let codingPath: [any CodingKey]
@@ -379,11 +441,13 @@ extension SchemaDecoder {
         var description: String {
             let path = codingPath.map(\.stringValue).joined(separator: ".")
             return "\(path.isEmpty ? "\(type)" : path): can't describe \(type), \(reason). "
-                + "Conform it to OpenAPISchemaProvider, or to CaseIterable if it's an enum."
+                + "Make it CaseIterable if it's an enum, or accept placeholder values in its init(from:)."
         }
     }
 }
 
+/// Collections that aren't `RangeReplaceableCollection` but can still be created empty,
+/// so recursion through them can be ended like through an array.
 protocol EmptyInitializable {
     init()
 }
