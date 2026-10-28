@@ -1,6 +1,6 @@
 #if OpenAPI
 
-struct DecodedShape {
+struct DecodedShape: Sendable {
     var type: Any.Type
     var kind: Kind
     var isNullable = false

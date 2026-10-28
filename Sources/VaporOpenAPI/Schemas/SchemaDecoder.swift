@@ -26,10 +26,33 @@ final class SchemaDecoder {
         if let placeholder = Placeholder.value(for: type) {
             return (placeholder, DecodedShape(type: type, kind: .leaf))
         }
+
+        guard
+            T.self is any RangeReplaceableCollection.Type
+                || T.self is any ExpressibleByNilLiteral.Type
+                || !path.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) })
+        else {
+            throw RecursionFound(shape: DecodedShape(type: type, kind: .recursive))
+        }
+
         let child = SchemaDecoder(path: path + [type], codingPath: codingPath)
-        let value = try T(from: child)
-        let decodedShape = DecodedShape(type: type, kind: child.kind, isNullable: child.isNullable)
-        return (value, decodedShape)
+
+        do {
+            let value = try T(from: child)
+            let decodedShape = DecodedShape(type: type, kind: child.kind, isNullable: child.isNullable)
+            return (value, decodedShape)
+        } catch is RecursionFound {
+            let decodedShape = DecodedShape(type: type, kind: child.kind, isNullable: child.isNullable)
+            if let empty = (T.self as? any RangeReplaceableCollection.Type)?.init() as? T {
+                return (empty, decodedShape)
+            }
+            if let none = (T.self as? any ExpressibleByNilLiteral.Type)?.init(nilLiteral: ()) as? T {
+                return (none, decodedShape)
+            }
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: codingPath, debugDescription: "\(type) contains itself with no array or optional to end the recursion")
+            )
+        }
     }
 
     func append(_ field: DecodedShape.Field) {
@@ -69,7 +92,11 @@ extension SchemaDecoder {
         }
 
         func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
-            try decodeField(type, forKey: key, isOptional: true)
+            do {
+                return try decodeField(type, forKey: key, isOptional: true)
+            } catch is RecursionFound {
+                return nil
+            }
         }
 
         func decode(_ type: Int128.Type, forKey key: Key) throws -> Int128 {
@@ -180,9 +207,14 @@ extension SchemaDecoder {
 
         private func decodeField<T: Decodable>(_ type: T.Type, forKey key: Key, isOptional: Bool) throws -> T {
             let fieldDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath + [key])
-            let (value, shape) = try fieldDecoder.decodeNested(type)
-            decoder.append(DecodedShape.Field(name: key.stringValue, shape: shape, isOptional: isOptional))
-            return value
+            do {
+                let (value, shape) = try fieldDecoder.decodeNested(type)
+                decoder.append(DecodedShape.Field(name: key.stringValue, shape: shape, isOptional: isOptional))
+                return value
+            } catch let error as RecursionFound {
+                decoder.append(DecodedShape.Field(name: key.stringValue, shape: error.shape, isOptional: isOptional))
+                throw error
+            }
         }
     }
 }
@@ -239,10 +271,15 @@ extension SchemaDecoder {
 
         private mutating func decodeElement<T: Decodable>(_ type: T.Type) throws -> T {
             let elementDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath)
-            let (value, shape) = try elementDecoder.decodeNested(type)
-            decoder.kind = .unkeyed(shape)
-            currentIndex += 1
-            return value
+            do {
+                let (value, shape) = try elementDecoder.decodeNested(type)
+                decoder.kind = .unkeyed(shape)
+                currentIndex += 1
+                return value
+            } catch let error as RecursionFound {
+                decoder.kind = .unkeyed(error.shape)
+                throw error
+            }
         }
     }
 }
@@ -273,11 +310,22 @@ extension SchemaDecoder {
         }
 
         private func decodeValue<T: Decodable>(_ type: T.Type) throws -> T {
-            let decoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath)
-            let (value, shape) = try decoder.decodeNested(type)
-            self.decoder.kind = .single(shape)
-            return value
+            do {
+                let valueDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath)
+                let (value, shape) = try valueDecoder.decodeNested(type)
+                decoder.kind = .single(shape)
+                return value
+            } catch let error as RecursionFound {
+                decoder.kind = .single(error.shape)
+                throw error
+            }
         }
+    }
+}
+
+extension SchemaDecoder {
+    private struct RecursionFound: Error {
+        let shape: DecodedShape
     }
 }
 
