@@ -10,6 +10,8 @@ final class SchemaDecoder {
         [:]
     }
 
+    static let dictionaryKey = "0"
+
     init(
         path: [Any.Type],
         codingPath: [any CodingKey]
@@ -30,6 +32,7 @@ final class SchemaDecoder {
         guard
             T.self is any RangeReplaceableCollection.Type
                 || T.self is any ExpressibleByNilLiteral.Type
+                || T.self is any EmptyInitializable.Type
                 || !path.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) })
         else {
             throw RecursionFound(shape: DecodedShape(type: type, kind: .recursive))
@@ -46,12 +49,38 @@ final class SchemaDecoder {
             if let empty = (T.self as? any RangeReplaceableCollection.Type)?.init() as? T {
                 return (empty, decodedShape)
             }
+            if let empty = (T.self as? any EmptyInitializable.Type)?.init() as? T {
+                return (empty, decodedShape)
+            }
             if let none = (T.self as? any ExpressibleByNilLiteral.Type)?.init(nilLiteral: ()) as? T {
                 return (none, decodedShape)
             }
-            throw DecodingError.dataCorrupted(
-                .init(codingPath: codingPath, debugDescription: "\(type) contains itself with no array or optional to end the recursion")
+            throw SchemaDecodingError(
+                type: type,
+                codingPath: codingPath,
+                reason: "it contains itself with no array or optional to end the recursion"
             )
+        } catch let error as SchemaDecodingError {
+            throw error
+        } catch {
+            let decodedShape = DecodedShape(type: type, kind: child.kind, isNullable: child.isNullable)
+            if let first = (T.self as? any CaseIterable.Type)?.allCases.first as? T {
+                return (first, decodedShape)
+            }
+            throw SchemaDecodingError(type: type, codingPath: codingPath, reason: reason(for: error))
+        }
+    }
+
+    /// The message of a `DecodingError`, without its case name and coding path.
+    private func reason(for error: any Error) -> String {
+        switch error as? DecodingError {
+        case .dataCorrupted(let context),
+            .typeMismatch(_, let context),
+            .valueNotFound(_, let context),
+            .keyNotFound(_, let context):
+            context.debugDescription
+        default:
+            "\(error)"
         }
     }
 
@@ -85,7 +114,12 @@ extension SchemaDecoder {
     struct KeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
         let decoder: SchemaDecoder
         var codingPath: [any CodingKey] { decoder.codingPath }
-        var allKeys: [Key] { [] }
+        var allKeys: [Key] {
+            if let key = Key(stringValue: dictionaryKey) {
+                return [key]
+            }
+            return []
+        }
 
         func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
             try decodeField(type, forKey: key, isOptional: false)
@@ -209,10 +243,19 @@ extension SchemaDecoder {
             let fieldDecoder = SchemaDecoder(path: decoder.path, codingPath: decoder.codingPath + [key])
             do {
                 let (value, shape) = try fieldDecoder.decodeNested(type)
-                decoder.append(DecodedShape.Field(name: key.stringValue, shape: shape, isOptional: isOptional))
+                let field = DecodedShape.Field(name: key.stringValue, shape: shape, isOptional: isOptional)
+                if key.stringValue == dictionaryKey {
+                    decoder.kind = .dictionary(shape)
+                } else {
+                    decoder.append(field)
+                }
                 return value
             } catch let error as RecursionFound {
-                decoder.append(DecodedShape.Field(name: key.stringValue, shape: error.shape, isOptional: isOptional))
+                if key.stringValue == dictionaryKey {
+                    decoder.kind = .dictionary(error.shape)
+                } else {
+                    decoder.append(.init(name: key.stringValue, shape: error.shape, isOptional: isOptional))
+                }
                 throw error
             }
         }
@@ -327,6 +370,25 @@ extension SchemaDecoder {
     private struct RecursionFound: Error {
         let shape: DecodedShape
     }
+
+    private struct SchemaDecodingError: Error, CustomStringConvertible {
+        let type: Any.Type
+        let codingPath: [any CodingKey]
+        let reason: String
+
+        var description: String {
+            let path = codingPath.map(\.stringValue).joined(separator: ".")
+            return "\(path.isEmpty ? "\(type)" : path): can't describe \(type), \(reason). "
+                + "Conform it to OpenAPISchemaProvider, or to CaseIterable if it's an enum."
+        }
+    }
 }
+
+protocol EmptyInitializable {
+    init()
+}
+
+extension Set: EmptyInitializable {}
+extension Dictionary: EmptyInitializable {}
 
 #endif
